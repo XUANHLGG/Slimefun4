@@ -21,8 +21,10 @@ import javax.annotation.ParametersAreNonnullByDefault;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.SoundCategory;
+import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
@@ -31,6 +33,7 @@ import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.inventory.ItemStack;
 
@@ -65,8 +68,10 @@ public class BackpackListener implements Listener {
 
         if (e.getInventory().getHolder(false) instanceof PlayerBackpack backpack) {
             openingPlayers.remove(p.getUniqueId());
-            backpacks.remove(p.getUniqueId());
-            backpackInstances.remove(p.getUniqueId());
+            if (Objects.equals(backpacks.get(p.getUniqueId()), backpack.getUniqueId())) {
+                backpacks.remove(p.getUniqueId());
+                backpackInstances.remove(p.getUniqueId());
+            }
             // The changedSlot computation and refreshSnapshot is moved to the
             // ProfileDataController#saveBackpackInventory
             Slimefun.getDatabaseManager().getProfileDataController().saveBackpackInventory(backpack);
@@ -74,8 +79,18 @@ public class BackpackListener implements Listener {
         }
     }
 
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onQuit(PlayerQuitEvent e) {
+        Player p = e.getPlayer();
+        if (p.getOpenInventory().getTopInventory().getHolder(false) instanceof PlayerBackpack backpack) {
+            Slimefun.getDatabaseManager().getProfileDataController().saveBackpackInventory(backpack);
+        }
+        clearPlayerState(p);
+    }
+
     @EventHandler
     public void onItemDrop(PlayerDropItemEvent e) {
+        clearStalePlayerState(e.getPlayer());
         if (!openingPlayers.isEmpty() && openingPlayers.contains(e.getPlayer().getUniqueId())) {
             e.setCancelled(true);
             return;
@@ -92,6 +107,7 @@ public class BackpackListener implements Listener {
 
     @EventHandler
     public void onPlayerSwap(PlayerSwapHandItemsEvent e) {
+        clearStalePlayerState(e.getPlayer());
         if (!openingPlayers.isEmpty() && openingPlayers.contains(e.getPlayer().getUniqueId())) {
             e.setCancelled(true);
             return;
@@ -114,6 +130,7 @@ public class BackpackListener implements Listener {
 
     @EventHandler
     public void onPlayerInteractAtEntity(PlayerInteractAtEntityEvent atEntityEvent) {
+        clearStalePlayerState(atEntityEvent.getPlayer());
         if (!openingPlayers.isEmpty()
                 && openingPlayers.contains(atEntityEvent.getPlayer().getUniqueId())) {
             atEntityEvent.setCancelled(true);
@@ -128,6 +145,7 @@ public class BackpackListener implements Listener {
 
     @EventHandler
     public void onPlayerInteractEntity(PlayerInteractEntityEvent atEntityEvent) {
+        clearStalePlayerState(atEntityEvent.getPlayer());
         if (!openingPlayers.isEmpty()
                 && openingPlayers.contains(atEntityEvent.getPlayer().getUniqueId())) {
             atEntityEvent.setCancelled(true);
@@ -142,6 +160,9 @@ public class BackpackListener implements Listener {
 
     @EventHandler(ignoreCancelled = true)
     public void onClick(InventoryClickEvent e) {
+        if (e.getWhoClicked() instanceof Player player) {
+            clearStalePlayerState(player);
+        }
         if (!openingPlayers.isEmpty()
                 && openingPlayers.contains(e.getWhoClicked().getUniqueId())) {
             e.setCancelled(true);
@@ -196,6 +217,7 @@ public class BackpackListener implements Listener {
 
     @ParametersAreNonnullByDefault
     private void openBackpackInternal(Player p, ItemStack item, SlimefunBackpack backpackItem) {
+        clearStalePlayerState(p);
         if (item.getAmount() != 1) {
             Slimefun.getLocalization().sendMessage(p, "backpack.no-stack", true);
             return;
@@ -268,17 +290,79 @@ public class BackpackListener implements Listener {
                             if (bp == null || bp.isInvalid()) {
                                 return;
                             }
+                            if (!p.isOnline()) {
+                                return;
+                            }
                             // Check if someone else is currently viewing this backpack
-                            if (backpacks.containsValue(bp.getUniqueId())
-                                    || !bp.getInventory().getViewers().isEmpty()) {
+                            if (isBackpackOpenByAnother(p, bp)) {
                                 Slimefun.getLocalization().sendMessage(p, "backpack.already-open", true);
                                 return;
                             }
                             SoundEffect.BACKPACK_OPEN_SOUND.playAt(p.getLocation(), SoundCategory.PLAYERS);
                             bp.open(p);
-                            backpacks.put(p.getUniqueId(), bp.getUniqueId());
-                            backpackInstances.put(p.getUniqueId(), backpackItem);
+                            if (p.getOpenInventory().getTopInventory().getHolder(false) == bp) {
+                                backpacks.put(p.getUniqueId(), bp.getUniqueId());
+                                backpackInstances.put(p.getUniqueId(), backpackItem);
+                            }
                         },
                         ThreadUtils.getMainThreadExecutor());
+    }
+
+    private void clearStalePlayerState(@Nonnull Player player) {
+        UUID uuid = player.getUniqueId();
+        UUID backpackUuid = backpacks.get(uuid);
+        if (backpackUuid == null) {
+            return;
+        }
+
+        if (!(player.getOpenInventory().getTopInventory().getHolder(false) instanceof PlayerBackpack backpack)
+                || !backpackUuid.equals(backpack.getUniqueId())) {
+            clearPlayerState(uuid);
+        }
+    }
+
+    private boolean isBackpackOpenByAnother(@Nonnull Player opener, @Nonnull PlayerBackpack backpack) {
+        UUID backpackUuid = backpack.getUniqueId();
+        boolean openedByAnother = false;
+
+        for (UUID viewerUuid : new HashSet<>(backpacks.keySet())) {
+            if (!backpackUuid.equals(backpacks.get(viewerUuid))) {
+                continue;
+            }
+
+            Player viewer = Bukkit.getPlayer(viewerUuid);
+            if (viewer == null || !isViewingBackpack(viewer, backpackUuid)) {
+                clearPlayerState(viewerUuid);
+            } else if (!viewerUuid.equals(opener.getUniqueId())) {
+                openedByAnother = true;
+            }
+        }
+
+        for (HumanEntity viewer : backpack.getInventory().getViewers()) {
+            if (viewer instanceof Player player
+                    && !player.getUniqueId().equals(opener.getUniqueId())
+                    && player.isOnline()
+                    && isViewingBackpack(player, backpackUuid)) {
+                return true;
+            }
+        }
+
+        return openedByAnother;
+    }
+
+    private boolean isViewingBackpack(@Nonnull Player player, @Nonnull UUID backpackUuid) {
+        var topInventory = player.getOpenInventory().getTopInventory();
+        return topInventory.getHolder(false) instanceof PlayerBackpack backpack
+                && backpackUuid.equals(backpack.getUniqueId());
+    }
+
+    private void clearPlayerState(@Nonnull Player player) {
+        clearPlayerState(player.getUniqueId());
+    }
+
+    private void clearPlayerState(@Nonnull UUID uuid) {
+        openingPlayers.remove(uuid);
+        backpacks.remove(uuid);
+        backpackInstances.remove(uuid);
     }
 }
