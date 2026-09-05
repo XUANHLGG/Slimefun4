@@ -25,6 +25,7 @@ import org.bukkit.entity.EntityType;
 import org.bukkit.entity.FallingBlock;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Event.Result;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause;
 import org.bukkit.inventory.ItemStack;
@@ -59,6 +60,11 @@ public class SeismicAxe extends SimpleSlimefunItem<ItemUseHandler> implements No
             Player p = e.getPlayer();
             List<Block> blocks = p.getLineOfSight(null, RANGE);
             Set<UUID> pushedEntities = new HashSet<>();
+
+            if (e.useBlock() != Result.DENY) {
+                e.getClickedBlock()
+                        .ifPresent(block -> Slimefun.getIntegrations().logInteraction(p, block));
+            }
 
             // Skip the first two, too close to the player.
             for (int i = 2; i < blocks.size(); i++) {
@@ -143,7 +149,7 @@ public class SeismicAxe extends SimpleSlimefunItem<ItemUseHandler> implements No
                     error("Exception while trying to set velocity: " + vector, x);
                 }
 
-                ((LivingEntity) entity).damage(event.getDamage());
+                ((LivingEntity) entity).damage(event.getDamage(), p);
             }
         }
     }

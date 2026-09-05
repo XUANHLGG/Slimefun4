@@ -14,6 +14,7 @@ import javax.annotation.Nonnull;
 import javax.annotation.ParametersAreNonnullByDefault;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.Server;
 import org.bukkit.block.Block;
 import org.bukkit.event.Event;
@@ -42,6 +43,8 @@ public class IntegrationsManager {
      * Our {@link ProtectionManager} instance.
      */
     private ProtectionManager protectionManager;
+
+    private CoreProtectIntegration coreProtectIntegration;
 
     /**
      * This boolean determines whether {@link #start()} was run.
@@ -143,6 +146,8 @@ public class IntegrationsManager {
                                     + Slimefun.getVersion());
         }
 
+        load("CoreProtect", integration -> coreProtectIntegration = new CoreProtectIntegration(integration));
+
         // Orebfuscator Integration
         load("Orebfuscator", integration -> {
             new OrebfuscatorIntegration(plugin).register();
@@ -220,6 +225,20 @@ public class IntegrationsManager {
      */
     public @Nonnull ProtectionManager getProtectionManager() {
         return protectionManager;
+    }
+
+    /**
+     * Logs a player interaction for integrations that support CoreProtect's click action.
+     *
+     * @param player
+     *            The player who performed the interaction
+     * @param block
+     *            The block that was interacted with
+     */
+    public void logInteraction(@Nonnull OfflinePlayer player, @Nonnull Block block) {
+        if (coreProtectIntegration != null) {
+            coreProtectIntegration.logInteraction(player, block);
+        }
     }
 
     /**
